@@ -1,0 +1,36 @@
+# Unreal Engine generated folders (rebuilt automatically)
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Builds/
+
+# Visual Studio / Rider / VS Code project files (regenerate from Marvel.uproject)
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Compiled files
+*.pdb
+*.dll
+*.exe
+*.obj
+*.o
+*.so
+*.apk
+*.obb
+
+# Original third-party model downloads (license may not allow redistribution)
+SourceArt/**/original/
+*.zip
+
+# OS clutter
+Thumbs.db
+.DS_Store
