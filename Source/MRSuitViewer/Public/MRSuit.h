@@ -65,6 +65,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "IronMan|Interaction")
 	UBoxComponent* GetInteractionBox() const { return InteractionBox; }
 
+	/**
+	 * Whether a hand at WorldPoint touches the model: inside its touch outline (the configuration's grab capsules, or
+	 * the box around the whole model when it has none) or at most Reach cm outside it. OutTouchPoint is the spot it
+	 * would take hold of: the nearest point on the outline, or WorldPoint itself when inside.
+	 */
+	bool FindTouchPoint(const FVector& WorldPoint, float Reach, FVector& OutTouchPoint) const;
+
+	/** Floor rectangle (world X/Y) covered by the model's outline box with the actor at ActorTransform. */
+	FBox2D GetFootprint(const FTransform& ActorTransform) const;
+
 	/** Records the initial spawn/floor transform for ResetIronMan(). */
 	void SetInitialPlacement(const FTransform& InTransform);
 
@@ -95,6 +105,21 @@ private:
 
 	/** The contact shadow only makes sense while the suit stands upright on the floor, not while it is held in the air. */
 	void UpdateContactShadowVisibility();
+
+	/** Lowest point of the model's touch outline (grab capsules, or the corners of its box) for the actor at ActorTransform. */
+	float GetLowestOutlinePoint(const FTransform& ActorTransform) const;
+
+	/** Lowest the outline may reach: standing upright on the floor it was placed on (which may dip a little below it). */
+	float GetLowestAllowedPoint() const;
+
+	/**
+	 * Keeps a held model out of the floor: once it touches the floor it stands upright on it (Rotation keeps only its
+	 * heading) and Location is raised as far as needed. Above the floor it follows the hand freely.
+	 */
+	void KeepAboveFloor(FVector& Location, FQuat& Rotation) const;
+
+	/** Let go just above the floor (or tilted on it): the model lands standing upright, exactly on the floor. */
+	void SettleOnFloor();
 
 	struct FSuitLightDefaults
 	{

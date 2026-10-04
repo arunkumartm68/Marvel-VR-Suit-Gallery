@@ -7,6 +7,22 @@
 class UMaterialInterface;
 class UStaticMesh;
 
+/** One capsule of a model's touch outline, in the suit mesh's own space (cm). */
+USTRUCT(BlueprintType)
+struct FMRGrabCapsule
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab")
+	FVector Start = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab")
+	FVector End = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grab", meta = (Units = "cm", ClampMin = "0.0"))
+	float Radius = 10.f;
+};
+
 /**
  * Developer calibration for the complete suit (DA_SuitConfiguration).
  *
@@ -42,6 +58,14 @@ public:
 	/** Maximum scale limit for two-hand scaling (e.g. 3.0 = ~5.7 meters giant). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction|Limits", meta = (ClampMin = "1.0", ClampMax = "10.0"))
 	float MaximumScale = 3.0f;
+
+	/**
+	 * Touch outline that follows the model's shape, in the mesh's own space. A pinch only takes hold on (or near) these
+	 * capsules. Empty: the box around the whole mesh is used, which is enough for a compact model like Iron Man but
+	 * would grab from the empty space around parts that stick far out, like the Iron Spider's legs.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Interaction")
+	TArray<FMRGrabCapsule> GrabCapsules;
 
 	/** Offset of the mesh from its placement point, in the suit's own frame (X forward, Y right, Z up). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Calibration", meta = (Units = "cm"))

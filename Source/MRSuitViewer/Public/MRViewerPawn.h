@@ -60,11 +60,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "MR|Interaction")
 	bool IsTwoHandScaling() const;
 
-	/** Resets the Iron Man suit back to its original placement location, rotation, and life-size scale. */
+	/** Puts every model in the room back where it was placed, at life size. */
 	UFUNCTION(BlueprintCallable, Category = "MR|Interaction")
 	void ResetIronMan();
 
-	/** Puts model ModelIndex of the viewer's model catalog in the room (0 = Iron Man Mk 85). */
+	/** Puts model ModelIndex of the viewer's model catalog in the room, beside any already there (0 = Iron Man Mk 85). */
 	UFUNCTION(BlueprintCallable, Category = "MR|Suit")
 	void SpawnModel(int32 ModelIndex = 0);
 
@@ -138,15 +138,21 @@ private:
 	bool GetTrackedHand(bool bRightHand, FXRHandTrackingState& OutHand) const;
 	/** Finds where this hand would take hold of the suit: the touched spot on its outline, or where the aim ray meets it. */
 	bool FindGrabPoint(bool bRightHand, const AMRSuit* Suit, FVector& OutGrabPoint) const;
+	/** The model this hand touches; with several close together, the one whose outline is nearest to the hand. */
+	AMRSuit* FindTouchedSuit(bool bRightHand, const TArray<AMRSuit*>& Suits, FVector& OutGrabPoint) const;
+	/** Lets go with this hand; the other hand, if it holds the same model, carries on holding it alone. */
+	void ReleaseHand(bool bRightHand, const FVector& OtherHandLocation, const FQuat& OtherHandRotation);
+	void UpdateOneHandHold(AMRSuit* Suit, bool bRightHand, const FVector& HandLocation, const FQuat& HandRotation, float DeltaTime) const;
 	void DrawGrabFeedback(const AMRSuit* Suit, bool bRightHand) const;
 	FVector GetHandLocation(bool bRightHand) const;
 	FQuat GetHandRotation(bool bRightHand) const;
-	AMRSuit* FindSuitActor() const;
+	TArray<AMRSuit*> GetSuitsInRoom() const;
 
 	TWeakObjectPtr<AMRSuitViewer> CachedViewer;
 
-	/** The model the hands were interacting with last frame; a different one (or none) drops any hold. */
-	TWeakObjectPtr<AMRSuit> LastInteractedSuit;
+	/** The model each hand holds. Both on one model scale it; one on each move two models at once. */
+	TWeakObjectPtr<AMRSuit> LeftHeldSuit;
+	TWeakObjectPtr<AMRSuit> RightHeldSuit;
 
 	bool bLeftGrabbing = false;
 	bool bRightGrabbing = false;

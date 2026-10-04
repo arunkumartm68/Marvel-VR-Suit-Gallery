@@ -16,6 +16,8 @@ namespace MRSuit
 	// How far (cm) the feet may be from the placement floor, and how upright the suit must be, to show the contact shadow.
 	constexpr float OnFloorTolerance = 3.f;
 	constexpr float UprightMinDot = 0.98f;
+	// Let go with the model at most this far (cm at life size) above the floor and it lands on it.
+	constexpr float LandingDistance = 10.f;
 }
 
 AMRSuit::AMRSuit()
@@ -108,6 +110,74 @@ void AMRSuit::UpdateContactShadowVisibility()
 	ContactShadow->SetVisibility(bShadowEnabled && bOnFloor);
 }
 
+float AMRSuit::GetLowestOutlinePoint(const FTransform& ActorTransform) const
+{
+	float Lowest = TNumericLimits<float>::Max();
+	if (Configuration && Configuration->GrabCapsules.Num() > 0)
+	{
+		const FTransform MeshToWorld = SuitMesh->GetRelativeTransform() * ActorTransform;
+		const float Scale = MeshToWorld.GetMaximumAxisScale();
+		for (const FMRGrabCapsule& Capsule : Configuration->GrabCapsules)
+		{
+			const float EndsZ = FMath::Min(MeshToWorld.TransformPosition(Capsule.Start).Z, MeshToWorld.TransformPosition(Capsule.End).Z);
+			Lowest = FMath::Min(Lowest, EndsZ - Capsule.Radius * Scale);
+		}
+		return Lowest;
+	}
+
+	const FTransform BoxToWorld = InteractionBox->GetRelativeTransform() * ActorTransform;
+	const FVector Extent = InteractionBox->GetUnscaledBoxExtent();
+	for (int32 Corner = 0; Corner < 8; ++Corner)
+	{
+		const FVector Local((Corner & 1) ? Extent.X : -Extent.X, (Corner & 2) ? Extent.Y : -Extent.Y, (Corner & 4) ? Extent.Z : -Extent.Z);
+		Lowest = FMath::Min(Lowest, BoxToWorld.TransformPosition(Local).Z);
+	}
+	return Lowest;
+}
+
+float AMRSuit::GetLowestAllowedPoint() const
+{
+	// Standing upright on the floor is as low as the model goes. Its outline may dip a little below the floor in that
+	// pose (round capsule ends, a negative floor offset), so that much is allowed at any orientation.
+	const float FloorZ = InitialTransform.GetLocation().Z;
+	const float RestingLowest = GetLowestOutlinePoint(FTransform(FQuat::Identity, FVector(0.f, 0.f, FloorZ), FVector(CurrentScale)));
+	return FMath::Min(FloorZ, RestingLowest);
+}
+
+void AMRSuit::KeepAboveFloor(FVector& Location, FQuat& Rotation) const
+{
+	const FVector Scale3D(CurrentScale);
+	const float LowestAllowed = GetLowestAllowedPoint();
+	if (GetLowestOutlinePoint(FTransform(Rotation, Location, Scale3D)) >= LowestAllowed)
+	{
+		return;
+	}
+
+	// Touching the floor: stand upright on it instead of resting on a tilted corner (a claw tip, a heel) with the
+	// feet hanging above the floor.
+	Rotation = FRotator(0.f, Rotation.Rotator().Yaw, 0.f).Quaternion();
+	const float Lowest = GetLowestOutlinePoint(FTransform(Rotation, Location, Scale3D));
+	if (Lowest < LowestAllowed)
+	{
+		Location.Z += LowestAllowed - Lowest;
+	}
+}
+
+void AMRSuit::SettleOnFloor()
+{
+	const FQuat Upright = FRotator(0.f, GetActorRotation().Yaw, 0.f).Quaternion();
+	FVector Location = GetActorLocation();
+	const float Gap = GetLowestOutlinePoint(FTransform(Upright, Location, FVector(CurrentScale))) - GetLowestAllowedPoint();
+	if (Gap > MRSuit::LandingDistance * CurrentScale)
+	{
+		return; // let go in the air: it stays floating where it is
+	}
+
+	Location.Z -= Gap;
+	SetActorLocationAndRotation(Location, Upright);
+	UpdateContactShadowVisibility();
+}
+
 void AMRSuit::ApplyConfiguration()
 {
 	if (!Configuration)
@@ -141,6 +211,63 @@ void AMRSuit::ApplyConfiguration()
 			FVector(Configuration->PositionOffset.X, Configuration->PositionOffset.Y, MRSuit::ContactShadowLift),
 			FVector(PlaneScale, PlaneScale, 1.f)));
 	}
+}
+
+bool AMRSuit::FindTouchPoint(const FVector& WorldPoint, float Reach, FVector& OutTouchPoint) const
+{
+	if (Configuration && Configuration->GrabCapsules.Num() > 0)
+	{
+		// The capsules are in the mesh's own space; local distances times the suit's scale are world distances.
+		const FTransform MeshTransform = SuitMesh->GetComponentTransform();
+		const float Scale = FMath::Max(MeshTransform.GetMaximumAxisScale(), KINDA_SMALL_NUMBER);
+		const FVector Local = MeshTransform.InverseTransformPosition(WorldPoint);
+
+		float BestGap = TNumericLimits<float>::Max();
+		FVector BestLocal = Local;
+		for (const FMRGrabCapsule& Capsule : Configuration->GrabCapsules)
+		{
+			const FVector OnAxis = FMath::ClosestPointOnSegment(Local, Capsule.Start, Capsule.End);
+			const FVector ToPoint = Local - OnAxis;
+			const float Gap = ToPoint.Size() - Capsule.Radius;
+			if (Gap < BestGap)
+			{
+				BestGap = Gap;
+				BestLocal = Gap <= 0.f ? Local : OnAxis + ToPoint.GetSafeNormal() * Capsule.Radius;
+			}
+		}
+		if (BestGap * Scale > Reach)
+		{
+			return false;
+		}
+		OutTouchPoint = MeshTransform.TransformPosition(BestLocal);
+		return true;
+	}
+
+	// No outline given: the box around the whole model, in its own unscaled space.
+	const FTransform BoxTransform = InteractionBox->GetComponentTransform();
+	const float Scale = FMath::Max(BoxTransform.GetScale3D().X, KINDA_SMALL_NUMBER);
+	const FVector Extent = InteractionBox->GetUnscaledBoxExtent();
+	const FVector Local = BoxTransform.InverseTransformPosition(WorldPoint);
+	const FVector Touch = Local.BoundToBox(-Extent, Extent);
+	if (FVector::Dist(Local, Touch) * Scale > Reach)
+	{
+		return false;
+	}
+	OutTouchPoint = BoxTransform.TransformPosition(Touch);
+	return true;
+}
+
+FBox2D AMRSuit::GetFootprint(const FTransform& ActorTransform) const
+{
+	const FTransform BoxToWorld = InteractionBox->GetRelativeTransform() * ActorTransform;
+	const FVector Extent = InteractionBox->GetUnscaledBoxExtent();
+	FBox2D Footprint(ForceInit);
+	for (int32 Corner = 0; Corner < 8; ++Corner)
+	{
+		const FVector World = BoxToWorld.TransformPosition(FVector((Corner & 1) ? Extent.X : -Extent.X, (Corner & 2) ? Extent.Y : -Extent.Y, (Corner & 4) ? Extent.Z : -Extent.Z));
+		Footprint += FVector2D(World.X, World.Y);
+	}
+	return Footprint;
 }
 
 float AMRSuit::GetSuitHeight() const
@@ -213,8 +340,9 @@ void AMRSuit::UpdateOneHandGrab(bool bRightHand, const FVector& HandLocation, co
 
 	// High-frequency jitter filter for rock-solid stability in hand tracking
 	constexpr float InterpSpeed = 25.f;
-	const FVector SmoothLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, InterpSpeed);
-	const FQuat SmoothRotation = FMath::QInterpTo(GetActorQuat(), TargetRotation, DeltaTime, InterpSpeed);
+	FVector SmoothLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, InterpSpeed);
+	FQuat SmoothRotation = FMath::QInterpTo(GetActorQuat(), TargetRotation, DeltaTime, InterpSpeed);
+	KeepAboveFloor(SmoothLocation, SmoothRotation);
 
 	SetActorLocationAndRotation(SmoothLocation, SmoothRotation);
 	UpdateContactShadowVisibility();
@@ -269,8 +397,9 @@ void AMRSuit::UpdateTwoHandGrab(const FVector& LeftHandLocation, const FVector& 
 	const FVector TargetLocation = CurrentMidpoint + (DeltaHandsQuat * (TwoHandInitialOffset * ScaleRatio));
 
 	constexpr float InterpSpeed = 25.f;
-	const FVector SmoothLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, InterpSpeed);
-	const FQuat SmoothRotation = FMath::QInterpTo(GetActorQuat(), TargetRotation, DeltaTime, InterpSpeed);
+	FVector SmoothLocation = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, InterpSpeed);
+	FQuat SmoothRotation = FMath::QInterpTo(GetActorQuat(), TargetRotation, DeltaTime, InterpSpeed);
+	KeepAboveFloor(SmoothLocation, SmoothRotation);
 
 	SetActorLocationAndRotation(SmoothLocation, SmoothRotation);
 	UpdateContactShadowVisibility();
@@ -291,8 +420,9 @@ void AMRSuit::EndGrab(bool bRightHand)
 	}
 	else
 	{
-		// Fully released: stays exactly where placed (no gravity, no physics)
+		// Fully released: stays exactly where placed (no gravity, no physics); just above the floor it lands on it
 		bIsGrabbed = false;
 		bIsTwoHandGrabbed = false;
+		SettleOnFloor();
 	}
 }

@@ -38,6 +38,10 @@ namespace MRSuitViewer
 	constexpr float MinSuitDistance = 100.f;
 	// Knee height catches beds, tables and sofas; chest height catches walls.
 	constexpr float ClearanceProbeHeights[] = { 40.f, 130.f };
+	// A model put in the room beside others: tried in steps to the right and left of straight ahead, this far apart.
+	constexpr float SideStep = 25.f;
+	constexpr int32 MaxSideSteps = 16;
+	constexpr float ModelGap = 20.f;
 }
 
 AMRSuitViewer::AMRSuitViewer()
@@ -307,9 +311,13 @@ void AMRSuitViewer::SetFloor(EMRFloorSource Source, AMRUKAnchor* Anchor)
 	UE_LOG(LogMRSuitViewer, Log, TEXT("Floor ready: %s, Z = %.1f cm (%s)"), *StaticEnum<EMRFloorSource>()->GetNameStringByValue(static_cast<int64>(Source)), FloorHeight, *RoomStatus);
 
 	PlaceTestAids();
-	if (PendingModelIndex != INDEX_NONE)
+	if (PendingModels.Num() > 0)
 	{
-		ShowModel(PendingModelIndex); // chosen before the floor was known
+		const TArray<int32> Chosen = PendingModels; // chosen before the floor was known
+		for (const int32 ModelIndex : Chosen)
+		{
+			ShowModel(ModelIndex);
+		}
 	}
 	else if (bAutoPlaceSuit)
 	{
@@ -441,68 +449,66 @@ float AMRSuitViewer::FindClearDistance(const FVector& Head, const FVector& Forwa
 	return ClearDistance;
 }
 
-void AMRSuitViewer::PlaceSuit()
+void AMRSuitViewer::PlaceInFront(AMRSuit* ModelSuit)
 {
-	if (!SuitClass)
-	{
-		return;
-	}
-
 	const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
 	const FVector Head = CameraManager ? CameraManager->GetCameraLocation() : GetActorLocation();
 	const FRotator Facing(0.f, CameraManager ? CameraManager->GetCameraRotation().Yaw : GetActorRotation().Yaw, 0.f);
 	const FVector Forward = Facing.Vector();
+	const FVector Right = FRotationMatrix(Facing).GetUnitAxis(EAxis::Y);
 	const float FloorHeight = GetFloorHeight();
 	const float Distance = FindClearDistance(Head, Forward, FloorHeight);
+	const FVector Ahead(Head.X + Forward.X * Distance, Head.Y + Forward.Y * Distance, FloorHeight);
 
-	const FVector SuitLocation(Head.X + Forward.X * Distance, Head.Y + Forward.Y * Distance, FloorHeight);
-	const FRotator SuitRotation(0.f, Facing.Yaw + 180.f, 0.f);
-
-	if (!Suit)
+	// Floor footprints of the other models in the room: this one stands beside them, not inside them.
+	TArray<FBox2D> Taken;
+	for (const TPair<int32, TObjectPtr<AMRSuit>>& Pair : ShownModels)
 	{
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Owner = this;
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		Suit = GetWorld()->SpawnActor<AMRSuit>(SuitClass, SuitLocation, SuitRotation, SpawnParams);
-		if (Suit && SuitConfiguration)
+		if (Pair.Value && Pair.Value != ModelSuit)
 		{
-			Suit->Configuration = SuitConfiguration;
-			Suit->ApplyConfiguration();
-		}
-		if (Suit)
-		{
-			Suit->SetInitialPlacement(FTransform(SuitRotation, SuitLocation, FVector(1.f)));
+			Taken.Add(Pair.Value->GetFootprint(Pair.Value->GetActorTransform()).ExpandBy(MRSuitViewer::ModelGap));
 		}
 	}
-	else
+
+	// Straight ahead if that is free, else the nearest free spot to the right or left of it, facing the user.
+	FTransform Placement(FRotator(0.f, Facing.Yaw + 180.f, 0.f), Ahead);
+	for (int32 Step = 0; Step <= 2 * MRSuitViewer::MaxSideSteps; ++Step)
 	{
-		Suit->SetActorLocationAndRotation(SuitLocation, SuitRotation);
-		Suit->SetInitialPlacement(FTransform(SuitRotation, SuitLocation, FVector(1.f)));
+		const float Offset = ((Step + 1) / 2) * MRSuitViewer::SideStep * ((Step % 2) ? 1.f : -1.f);
+		const FVector Spot = Ahead + Right * Offset;
+		const FTransform Candidate(FRotator(0.f, (Head - Spot).Rotation().Yaw, 0.f), Spot);
+		const FBox2D Footprint = ModelSuit->GetFootprint(Candidate);
+		const bool bFree = !Taken.ContainsByPredicate([&Footprint](const FBox2D& Other) { return Other.Intersect(Footprint); });
+		if (bFree && (Step == 0 || IsSpotClear(Head, Spot, FloorHeight)))
+		{
+			Placement = Candidate;
+			break;
+		}
 	}
+
+	ModelSuit->SetActorLocationAndRotation(Placement.GetLocation(), Placement.GetRotation());
+	ModelSuit->SetInitialPlacement(FTransform(Placement.GetRotation(), Placement.GetLocation(), FVector(1.f)));
 }
 
-void AMRSuitViewer::SpawnSuit(TSubclassOf<AMRSuit> InSuitClass, UMRSuitConfiguration* InConfig)
+bool AMRSuitViewer::IsSpotClear(const FVector& Head, const FVector& Spot, float FloorHeight) const
 {
-	if (InSuitClass)
+	const UMRUKSubsystem* MRUK = GetMRUK();
+	AMRUKRoom* Room = MRUK ? MRUK->GetCurrentRoom() : nullptr;
+	const FVector Flat(Spot.X - Head.X, Spot.Y - Head.Y, 0.f);
+	const float Distance = Flat.Size();
+	if (!Room || Distance < KINDA_SMALL_NUMBER)
 	{
-		SuitClass = InSuitClass;
+		return true;
 	}
-	if (InConfig)
+	for (const float ProbeZ : MRSuitViewer::ClearanceProbeHeights)
 	{
-		SuitConfiguration = InConfig;
+		FMRUKHit Hit;
+		if (Room->Raycast(FVector(Head.X, Head.Y, FloorHeight + ProbeZ), Flat / Distance, Distance + MRSuitViewer::SuitClearance, FMRUKLabelFilter(), Hit))
+		{
+			return false;
+		}
 	}
-	PlaceSuit();
-}
-
-void AMRSuitViewer::DespawnSuit()
-{
-	if (Suit)
-	{
-		Suit->Destroy();
-		Suit = nullptr;
-	}
-	PendingModelIndex = INDEX_NONE;
-	SetActiveModel(INDEX_NONE);
+	return true;
 }
 
 int32 AMRSuitViewer::GetModelCount() const
@@ -552,6 +558,31 @@ bool AMRSuitViewer::ResolveModel(int32 ModelIndex, TSubclassOf<AMRSuit>& OutClas
 	return ModelIndex == 0 && OutClass != nullptr;
 }
 
+bool AMRSuitViewer::IsModelShown(int32 ModelIndex) const
+{
+	const TObjectPtr<AMRSuit>* Found = ShownModels.Find(ModelIndex);
+	return Found && *Found;
+}
+
+TArray<AMRSuit*> AMRSuitViewer::GetShownSuits() const
+{
+	TArray<AMRSuit*> Suits;
+	for (const TPair<int32, TObjectPtr<AMRSuit>>& Pair : ShownModels)
+	{
+		if (Pair.Value)
+		{
+			Suits.Add(Pair.Value);
+		}
+	}
+	return Suits;
+}
+
+AMRSuit* AMRSuitViewer::GetSuit() const
+{
+	const TObjectPtr<AMRSuit>* Found = ShownModels.Find(ActiveModelIndex);
+	return Found ? Found->Get() : nullptr;
+}
+
 bool AMRSuitViewer::ShowModel(int32 ModelIndex)
 {
 	TSubclassOf<AMRSuit> ModelClass;
@@ -565,35 +596,79 @@ bool AMRSuitViewer::ShowModel(int32 ModelIndex)
 	if (!IsFloorReady())
 	{
 		// Wait for the floor so the model's feet land on it; SetFloor shows it.
-		PendingModelIndex = ModelIndex;
+		PendingModels.AddUnique(ModelIndex);
 		return true;
 	}
-	PendingModelIndex = INDEX_NONE;
+	PendingModels.Remove(ModelIndex);
 
-	if (ModelIndex != ActiveModelIndex && Suit)
+	AMRSuit* ModelSuit = IsModelShown(ModelIndex) ? ShownModels[ModelIndex].Get() : nullptr;
+	if (!ModelSuit)
 	{
-		Suit->Destroy();
-		Suit = nullptr;
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = this;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		ModelSuit = GetWorld()->SpawnActor<AMRSuit>(ModelClass, FVector(0.f, 0.f, GetFloorHeight()), FRotator::ZeroRotator, SpawnParams);
+		if (!ModelSuit)
+		{
+			return false;
+		}
+		// An entry without a configuration uses its actor class's own, not another model's.
+		if (ModelConfiguration)
+		{
+			ModelSuit->Configuration = ModelConfiguration;
+			ModelSuit->ApplyConfiguration();
+		}
+		ShownModels.Add(ModelIndex, ModelSuit);
 	}
+	PlaceInFront(ModelSuit); // a new model beside the others, or one already in the room back in front of the user
 
-	// An entry without a configuration uses its actor class's own, not the previous model's.
-	SuitClass = ModelClass;
-	SuitConfiguration = ModelConfiguration;
-	PlaceSuit(); // spawns the model, or brings the one already in the room back in front of the user
-	if (!Suit)
-	{
-		SetActiveModel(INDEX_NONE);
-		return false;
-	}
-
-	UE_LOG(LogMRSuitViewer, Log, TEXT("Showing model %d (%s)."), ModelIndex, *GetModelName(ModelIndex).ToString());
+	UE_LOG(LogMRSuitViewer, Log, TEXT("Showing model %d (%s), %d in the room."), ModelIndex, *GetModelName(ModelIndex).ToString(), ShownModels.Num());
 	SetActiveModel(ModelIndex);
 	return true;
 }
 
+void AMRSuitViewer::HideModel(int32 ModelIndex)
+{
+	PendingModels.Remove(ModelIndex);
+	TObjectPtr<AMRSuit> Removed;
+	if (ShownModels.RemoveAndCopyValue(ModelIndex, Removed) && Removed)
+	{
+		Removed->Destroy();
+		UE_LOG(LogMRSuitViewer, Log, TEXT("Removed model %d (%s), %d in the room."), ModelIndex, *GetModelName(ModelIndex).ToString(), ShownModels.Num());
+	}
+	if (ModelIndex == ActiveModelIndex)
+	{
+		int32 Remaining = INDEX_NONE;
+		for (const TPair<int32, TObjectPtr<AMRSuit>>& Pair : ShownModels)
+		{
+			Remaining = Pair.Key;
+		}
+		SetActiveModel(Remaining);
+	}
+}
+
+bool AMRSuitViewer::ToggleModel(int32 ModelIndex)
+{
+	if (IsModelShown(ModelIndex) || PendingModels.Contains(ModelIndex))
+	{
+		HideModel(ModelIndex);
+		return false;
+	}
+	return ShowModel(ModelIndex);
+}
+
 void AMRSuitViewer::ClearModel()
 {
-	DespawnSuit();
+	for (const TPair<int32, TObjectPtr<AMRSuit>>& Pair : ShownModels)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->Destroy();
+		}
+	}
+	ShownModels.Reset();
+	PendingModels.Reset();
+	SetActiveModel(INDEX_NONE);
 }
 
 void AMRSuitViewer::SetActiveModel(int32 ModelIndex)

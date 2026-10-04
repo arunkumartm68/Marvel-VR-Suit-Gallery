@@ -428,15 +428,12 @@ void UMRWristMenuComponent::UpdateVisuals()
 	using namespace MRWristMenu;
 
 	const AMRSuitViewer* Viewer = GetViewer();
-	const int32 ActiveModel = Viewer ? Viewer->GetActiveModelIndex() : INDEX_NONE;
-	const bool bActiveChanged = ActiveModel != ShownActiveModel;
-	ShownActiveModel = ActiveModel;
 
 	for (int32 Index = 0; Index < Buttons.Num(); ++Index)
 	{
 		FMRMenuButton& Button = Buttons[Index];
 		const bool bIsModel = Button.Action >= 0;
-		const bool bActive = bIsModel && Button.Action == ActiveModel;
+		const bool bActive = bIsModel && Viewer && Viewer->IsModelShown(Button.Action);
 
 		FLinearColor Color = bIsModel ? ModelColor : (Button.Action == ClearAction ? ClearColor : ResetColor);
 		if (FlashTime > 0.f && FlashButton == Index)
@@ -458,10 +455,12 @@ void UMRWristMenuComponent::UpdateVisuals()
 			Button.ShownColor = Color;
 		}
 
-		if (bActiveChanged && Button.Detail)
+		if (Button.Detail && (bActive != Button.bShowsInRoom || !Button.bDetailInitialised))
 		{
 			Button.Detail->SetText(bActive ? FText::FromString(TEXT("In the room")) : Button.Description);
 			Button.Detail->SetTextRenderColor(bActive ? FColor(90, 255, 150) : FColor(170, 190, 205));
+			Button.bShowsInRoom = bActive;
+			Button.bDetailInitialised = true;
 		}
 	}
 }

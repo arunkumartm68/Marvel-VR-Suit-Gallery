@@ -104,14 +104,12 @@ void AMRViewerPawn::Tick(float DeltaTime)
 
 bool AMRViewerPawn::IsSuitGrabbed() const
 {
-	const AMRSuit* Suit = FindSuitActor();
-	return Suit ? Suit->IsGrabbed() : false;
+	return GetSuitsInRoom().ContainsByPredicate([](const AMRSuit* Suit) { return Suit->IsGrabbed(); });
 }
 
 bool AMRViewerPawn::IsTwoHandScaling() const
 {
-	const AMRSuit* Suit = FindSuitActor();
-	return Suit ? Suit->IsTwoHandGrabbed() : false;
+	return GetSuitsInRoom().ContainsByPredicate([](const AMRSuit* Suit) { return Suit->IsTwoHandGrabbed(); });
 }
 
 void AMRViewerPawn::SpawnModel(int32 ModelIndex)
@@ -132,7 +130,11 @@ void AMRViewerPawn::ClearRoom()
 
 void AMRViewerPawn::HandleModelSelected(int32 ModelIndex)
 {
-	SpawnModel(ModelIndex);
+	// A model button puts that model in the room, or takes it out again; the other models stay.
+	if (CachedViewer.IsValid())
+	{
+		CachedViewer->ToggleModel(ModelIndex);
+	}
 }
 
 void AMRViewerPawn::HandleClearRoom()
@@ -145,18 +147,19 @@ void AMRViewerPawn::HandleResetPose()
 	ResetIronMan();
 }
 
-AMRSuit* AMRViewerPawn::FindSuitActor() const
+TArray<AMRSuit*> AMRViewerPawn::GetSuitsInRoom() const
 {
-	if (CachedViewer.IsValid() && CachedViewer->GetSuit())
+	if (CachedViewer.IsValid())
 	{
-		return CachedViewer->GetSuit();
+		return CachedViewer->GetShownSuits();
 	}
 
+	TArray<AMRSuit*> Suits;
 	for (TActorIterator<AMRSuit> It(GetWorld()); It; ++It)
 	{
-		return *It;
+		Suits.Add(*It);
 	}
-	return nullptr;
+	return Suits;
 }
 
 bool AMRViewerPawn::GetTrackedHand(bool bRightHand, FXRHandTrackingState& OutHand) const
@@ -285,26 +288,23 @@ bool AMRViewerPawn::FindGrabPoint(bool bRightHand, const AMRSuit* Suit, FVector&
 		return false;
 	}
 
-	// Work in the outline box's own unscaled space; world distances are divided by the suit's scale.
-	const FTransform BoxTransform = Box->GetComponentTransform();
-	const float Scale = FMath::Max(BoxTransform.GetScale3D().X, KINDA_SMALL_NUMBER);
-	const FVector Extent = Box->GetUnscaledBoxExtent();
-
-	// Direct grab: the hand touches (or is inside) the suit's outline; hold it at the nearest spot on the outline.
-	const FVector HandLocal = BoxTransform.InverseTransformPosition(GetHandLocation(bRightHand));
-	const FVector TouchLocal = HandLocal.BoundToBox(-Extent, Extent);
-	if (FVector::Dist(HandLocal, TouchLocal) * Scale <= DirectGrabReachDistance)
+	// Direct grab: the hand touches (or is inside) the model's outline; hold it at the nearest spot on the outline.
+	if (Suit->FindTouchPoint(GetHandLocation(bRightHand), DirectGrabReachDistance, OutGrabPoint))
 	{
-		OutGrabPoint = BoxTransform.TransformPosition(TouchLocal);
 		return true;
 	}
 
-	// Distance grab: hold the suit where the hand's aim ray enters its outline.
+	// Distance grab: hold the suit where the hand's aim ray enters its outline box.
 	const UMotionControllerComponent* Aim = bRightHand ? RightAim : LeftAim;
 	if (!MRViewerPawn::bAllowDistanceGrab || !Aim || !Aim->IsTracked())
 	{
 		return false;
 	}
+
+	// Work in the outline box's own unscaled space; world distances are divided by the suit's scale.
+	const FTransform BoxTransform = Box->GetComponentTransform();
+	const float Scale = FMath::Max(BoxTransform.GetScale3D().X, KINDA_SMALL_NUMBER);
+	const FVector Extent = Box->GetUnscaledBoxExtent();
 
 	const FVector RayOrigin = BoxTransform.InverseTransformPosition(Aim->GetComponentLocation());
 	const FVector RayDir = BoxTransform.InverseTransformVectorNoScale(Aim->GetForwardVector());
@@ -341,6 +341,28 @@ bool AMRViewerPawn::FindGrabPoint(bool bRightHand, const AMRSuit* Suit, FVector&
 	return true;
 }
 
+AMRSuit* AMRViewerPawn::FindTouchedSuit(bool bRightHand, const TArray<AMRSuit*>& Suits, FVector& OutGrabPoint) const
+{
+	const FVector Hand = GetHandLocation(bRightHand);
+	AMRSuit* Touched = nullptr;
+	float BestDistance = TNumericLimits<float>::Max();
+	for (AMRSuit* Suit : Suits)
+	{
+		FVector GrabPoint;
+		if (FindGrabPoint(bRightHand, Suit, GrabPoint))
+		{
+			const float Distance = FVector::Dist(Hand, GrabPoint);
+			if (Distance < BestDistance)
+			{
+				Touched = Suit;
+				BestDistance = Distance;
+				OutGrabPoint = GrabPoint;
+			}
+		}
+	}
+	return Touched;
+}
+
 void AMRViewerPawn::DrawGrabFeedback(const AMRSuit* Suit, bool bRightHand) const
 {
 	// A small marker on the spot being held, joined to the hand by a thin line.
@@ -351,28 +373,59 @@ void AMRViewerPawn::DrawGrabFeedback(const AMRSuit* Suit, bool bRightHand) const
 
 void AMRViewerPawn::ResetIronMan()
 {
-	AMRSuit* Suit = FindSuitActor();
-	if (Suit)
+	bLeftGrabbing = false;
+	bRightGrabbing = false;
+	LeftHeldSuit.Reset();
+	RightHeldSuit.Reset();
+	for (AMRSuit* Suit : GetSuitsInRoom())
 	{
-		bLeftGrabbing = false;
-		bRightGrabbing = false;
 		Suit->ResetIronMan();
 	}
 }
 
-void AMRViewerPawn::UpdateSuitInteraction(float DeltaTime)
+void AMRViewerPawn::ReleaseHand(bool bRightHand, const FVector& OtherHandLocation, const FQuat& OtherHandRotation)
 {
-	AMRSuit* Suit = FindSuitActor();
-	if (Suit != LastInteractedSuit.Get())
-	{
-		// The model was swapped or cleared from the menu: let go of the old one.
-		bLeftGrabbing = false;
-		bRightGrabbing = false;
-		LastInteractedSuit = Suit;
-	}
+	(bRightHand ? bRightGrabbing : bLeftGrabbing) = false;
+	TWeakObjectPtr<AMRSuit>& Held = bRightHand ? RightHeldSuit : LeftHeldSuit;
+	AMRSuit* Suit = Held.Get();
+	Held.Reset();
 	if (!Suit)
 	{
 		return;
+	}
+
+	Suit->EndGrab(bRightHand);
+	const bool bOtherHandHolds = bRightHand ? (bLeftGrabbing && LeftHeldSuit.Get() == Suit) : (bRightGrabbing && RightHeldSuit.Get() == Suit);
+	if (bOtherHandHolds)
+	{
+		// Seamlessly fall back to a one-hand hold with the other hand
+		Suit->StartOneHandGrab(!bRightHand, OtherHandLocation, OtherHandRotation);
+	}
+}
+
+void AMRViewerPawn::UpdateOneHandHold(AMRSuit* Suit, bool bRightHand, const FVector& HandLocation, const FQuat& HandRotation, float DeltaTime) const
+{
+	// Phase 3, 4, 5: One-Hand Grab & Move & Rotate
+	if (!Suit->IsGrabbed() || Suit->IsTwoHandGrabbed() || Suit->IsGrabbedWithRightHand() != bRightHand)
+	{
+		Suit->StartOneHandGrab(bRightHand, HandLocation, HandRotation);
+	}
+	Suit->UpdateOneHandGrab(bRightHand, HandLocation, HandRotation, DeltaTime);
+	DrawGrabFeedback(Suit, bRightHand);
+}
+
+void AMRViewerPawn::UpdateSuitInteraction(float DeltaTime)
+{
+	const TArray<AMRSuit*> Suits = GetSuitsInRoom();
+
+	// A model taken out of the room (menu or Clear) lets go of the hand holding it.
+	if (bLeftGrabbing && !LeftHeldSuit.IsValid())
+	{
+		bLeftGrabbing = false;
+	}
+	if (bRightGrabbing && !RightHeldSuit.IsValid())
+	{
+		bRightGrabbing = false;
 	}
 
 	const APlayerController* PC = Cast<APlayerController>(GetController());
@@ -400,94 +453,76 @@ void AMRViewerPawn::UpdateSuitInteraction(float DeltaTime)
 	const FVector RightPos = GetHandLocation(true);
 	const FQuat RightRot = GetHandRotation(true);
 
-	// Evaluate Left Hand Grab transitions
+	// Evaluate Left Hand Grab transitions: take hold of the model the hand touches, or let go
 	if (bLeftWantsGrab && !bPrevLeftGrabIntent)
 	{
 		FVector GrabPoint;
-		if (FindGrabPoint(false, Suit, GrabPoint))
+		if (AMRSuit* Touched = FindTouchedSuit(false, Suits, GrabPoint))
 		{
 			bLeftGrabbing = true;
-			LeftGrabLocal = Suit->GetActorTransform().InverseTransformPosition(GrabPoint);
+			LeftHeldSuit = Touched;
+			LeftGrabLocal = Touched->GetActorTransform().InverseTransformPosition(GrabPoint);
 		}
 	}
 	else if (!bLeftWantsGrab && bLeftGrabbing)
 	{
-		bLeftGrabbing = false;
-		Suit->EndGrab(false);
-		if (bRightGrabbing)
-		{
-			// Seamlessly fall back to single-hand right grab
-			Suit->StartOneHandGrab(true, RightPos, RightRot);
-		}
+		ReleaseHand(false, RightPos, RightRot);
 	}
 
 	// Evaluate Right Hand Grab transitions
 	if (bRightWantsGrab && !bPrevRightGrabIntent)
 	{
 		FVector GrabPoint;
-		if (FindGrabPoint(true, Suit, GrabPoint))
+		if (AMRSuit* Touched = FindTouchedSuit(true, Suits, GrabPoint))
 		{
 			bRightGrabbing = true;
-			RightGrabLocal = Suit->GetActorTransform().InverseTransformPosition(GrabPoint);
+			RightHeldSuit = Touched;
+			RightGrabLocal = Touched->GetActorTransform().InverseTransformPosition(GrabPoint);
 		}
 	}
 	else if (!bRightWantsGrab && bRightGrabbing)
 	{
-		bRightGrabbing = false;
-		Suit->EndGrab(true);
-		if (bLeftGrabbing)
-		{
-			// Seamlessly fall back to single-hand left grab
-			Suit->StartOneHandGrab(false, LeftPos, LeftRot);
-		}
+		ReleaseHand(true, LeftPos, LeftRot);
 	}
 
 	bPrevLeftGrabIntent = bLeftWantsGrab;
 	bPrevRightGrabIntent = bRightWantsGrab;
 
 	// Execute appropriate interaction phase
-	if (bLeftGrabbing && bRightGrabbing)
+	AMRSuit* LeftSuit = bLeftGrabbing ? LeftHeldSuit.Get() : nullptr;
+	AMRSuit* RightSuit = bRightGrabbing ? RightHeldSuit.Get() : nullptr;
+	if (LeftSuit && LeftSuit == RightSuit)
 	{
-		// Phase 6 & Phase 7: Two-Hand Scaling and Multi-Axis Transformation
-		if (!Suit->IsTwoHandGrabbed())
+		// Phase 6 & Phase 7: Two-Hand Scaling and Multi-Axis Transformation of the model both hands hold
+		if (!LeftSuit->IsTwoHandGrabbed())
 		{
-			Suit->StartTwoHandGrab(LeftPos, RightPos);
+			LeftSuit->StartTwoHandGrab(LeftPos, RightPos);
 		}
-		Suit->UpdateTwoHandGrab(LeftPos, RightPos, DeltaTime);
+		LeftSuit->UpdateTwoHandGrab(LeftPos, RightPos, DeltaTime);
 
-		DrawGrabFeedback(Suit, false);
-		DrawGrabFeedback(Suit, true);
-	}
-	else if (bLeftGrabbing)
-	{
-		// Phase 3, 4, 5: One-Hand Grab & Move & Rotate (Left)
-		if (!Suit->IsGrabbed() || Suit->IsTwoHandGrabbed() || Suit->IsGrabbedWithRightHand())
-		{
-			Suit->StartOneHandGrab(false, LeftPos, LeftRot);
-		}
-		Suit->UpdateOneHandGrab(false, LeftPos, LeftRot, DeltaTime);
-		DrawGrabFeedback(Suit, false);
-	}
-	else if (bRightGrabbing)
-	{
-		// Phase 3, 4, 5: One-Hand Grab & Move & Rotate (Right)
-		if (!Suit->IsGrabbed() || Suit->IsTwoHandGrabbed() || !Suit->IsGrabbedWithRightHand())
-		{
-			Suit->StartOneHandGrab(true, RightPos, RightRot);
-		}
-		Suit->UpdateOneHandGrab(true, RightPos, RightRot, DeltaTime);
-		DrawGrabFeedback(Suit, true);
+		DrawGrabFeedback(LeftSuit, false);
+		DrawGrabFeedback(LeftSuit, true);
 	}
 	else
 	{
-		// Hover: a small dim marker on the spot each hand would take hold of.
-		for (const bool bRightHand : { false, true })
+		// Each hand moves the model it holds (two different models can be moved at once).
+		if (LeftSuit)
 		{
-			FVector HoverPoint;
-			if (FindGrabPoint(bRightHand, Suit, HoverPoint))
-			{
-				DrawDebugSphere(GetWorld(), HoverPoint, 1.5f, 8, FColor(0, 180, 255), false, -1.f, 0, 0.2f);
-			}
+			UpdateOneHandHold(LeftSuit, false, LeftPos, LeftRot, DeltaTime);
+		}
+		if (RightSuit)
+		{
+			UpdateOneHandHold(RightSuit, true, RightPos, RightRot, DeltaTime);
+		}
+	}
+
+	// Hover: a small dim marker on the spot each free hand would take hold of.
+	for (const bool bRightHand : { false, true })
+	{
+		FVector HoverPoint;
+		if (!(bRightHand ? RightSuit : LeftSuit) && FindTouchedSuit(bRightHand, Suits, HoverPoint))
+		{
+			DrawDebugSphere(GetWorld(), HoverPoint, 1.5f, 8, FColor(0, 180, 255), false, -1.f, 0, 0.2f);
 		}
 	}
 }

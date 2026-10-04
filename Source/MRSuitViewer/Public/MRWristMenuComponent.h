@@ -42,6 +42,10 @@ struct FMRMenuButton
 
 	FText Description;
 	FLinearColor ShownColor = FLinearColor::Transparent;
+
+	/** Model buttons: whether the second line currently says the model is in the room. */
+	bool bShowsInRoom = false;
+	bool bDetailInitialised = false;
 };
 
 /**
@@ -49,8 +53,9 @@ struct FMRMenuButton
  *
  * Hand tracking: turn the left palm towards your face to show it; tap a button with the right index fingertip.
  * Controllers: the left menu button shows or hides it; point the right controller at a button and pull the trigger.
- * There is one button per model in the viewer's model catalog, plus Clear (empty the room) and Reset
- * (bring the model back in front of the user at life size).
+ * There is one button per model in the viewer's model catalog: tap it to put that model in the room (beside any others
+ * already there), tap it again to take it out. Clear empties the room; Reset puts every model back where it was placed,
+ * at life size.
  */
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class MRSUITVIEWER_API UMRWristMenuComponent : public USceneComponent
@@ -132,6 +137,5 @@ private:
 	int32 HoveredButton = INDEX_NONE;
 	int32 FlashButton = INDEX_NONE;
 	float FlashTime = 0.f;
-	int32 ShownActiveModel = INDEX_NONE - 1;
 	float MenuHalfHeight = 0.f;
 };

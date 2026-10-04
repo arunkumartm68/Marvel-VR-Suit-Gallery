@@ -43,7 +43,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FMRActiveModelChangedSignature, int3
  *   1. starts the passthrough underlay so the real room is visible,
  *   2. requests the Horizon OS spatial-data permission and loads the room scan with MR Utility Kit,
  *   3. resolves the real floor height (room-scan floor, falling back to the boundary floor),
- *   4. stands the suit on that floor in front of the user, facing them,
+ *   4. stands the models chosen in the hand menu on that floor in front of the user, facing them (several can stand
+ *      in the room together, side by side),
  *   5. optionally shows developer test aids: a floor grid, a 100 cm reference cube and a status panel.
  */
 UCLASS()
@@ -82,7 +83,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "MR|Models")
 	TObjectPtr<UMRModelCatalog> ModelCatalog;
 
-	/** Fired when a model is put in the room (its catalog index) or the room is cleared (INDEX_NONE). */
+	/** Fired when a model is put in the room (its catalog index) or taken out (the model put in last, INDEX_NONE when empty). */
 	UPROPERTY(BlueprintAssignable, Category = "MR|Models")
 	FMRActiveModelChangedSignature OnActiveModelChanged;
 
@@ -95,19 +96,35 @@ public:
 	UFUNCTION(BlueprintPure, Category = "MR|Models")
 	FText GetModelDescription(int32 ModelIndex) const;
 
-	/** Catalog index of the model in the room, or INDEX_NONE when the room is empty. */
+	/** Catalog index of the model put in the room last, or INDEX_NONE when the room is empty. */
 	UFUNCTION(BlueprintPure, Category = "MR|Models")
 	int32 GetActiveModelIndex() const { return ActiveModelIndex; }
 
+	/** Whether catalog model ModelIndex is standing in the room. */
+	UFUNCTION(BlueprintPure, Category = "MR|Models")
+	bool IsModelShown(int32 ModelIndex) const;
+
+	/** All models standing in the room. */
+	UFUNCTION(BlueprintPure, Category = "MR|Models")
+	TArray<AMRSuit*> GetShownSuits() const;
+
 	/**
-	 * Puts catalog model ModelIndex in the room, standing on the floor in front of the user, replacing any other model.
-	 * Choosing the model already in the room brings it back in front of the user at life size.
+	 * Puts catalog model ModelIndex in the room, standing on the floor in front of the user, beside any models already
+	 * there. A model already in the room is brought back in front of the user at life size.
 	 * Before the floor is known the choice is remembered and applied once it is.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MR|Models")
 	bool ShowModel(int32 ModelIndex);
 
-	/** Removes the model so the room is empty. */
+	/** Takes catalog model ModelIndex out of the room. */
+	UFUNCTION(BlueprintCallable, Category = "MR|Models")
+	void HideModel(int32 ModelIndex);
+
+	/** What a model button in the hand menu does: puts the model in the room, or takes it out if it is already there. */
+	UFUNCTION(BlueprintCallable, Category = "MR|Models")
+	bool ToggleModel(int32 ModelIndex);
+
+	/** Removes every model so the room is empty. */
 	UFUNCTION(BlueprintCallable, Category = "MR|Models")
 	void ClearModel();
 
@@ -161,19 +178,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "MR")
 	bool IsPassthroughVisible() const { return bPassthroughVisible; }
 
+	/** The model put in the room last, or nullptr when the room is empty. */
 	UFUNCTION(BlueprintPure, Category = "MR|Suit")
-	AMRSuit* GetSuit() const { return Suit; }
+	AMRSuit* GetSuit() const;
 
 	UFUNCTION(BlueprintPure, Category = "MR|Suit")
-	bool IsSuitSpawned() const { return Suit != nullptr; }
-
-	/** Spawns the suit in front of the user at the real floor height. */
-	UFUNCTION(BlueprintCallable, Category = "MR|Suit")
-	void SpawnSuit(TSubclassOf<AMRSuit> InSuitClass = nullptr, UMRSuitConfiguration* InConfig = nullptr);
-
-	/** Removes the suit from the room so the room is empty. */
-	UFUNCTION(BlueprintCallable, Category = "MR|Suit")
-	void DespawnSuit();
+	bool IsSuitSpawned() const { return ShownModels.Num() > 0; }
 
 	/** Discards the loaded room data and detects the floor again. */
 	UFUNCTION(BlueprintCallable, Category = "MR")
@@ -203,7 +213,10 @@ private:
 	UMRUKSubsystem* GetMRUK() const;
 	void ApplyTestAidMaterials();
 	void PlaceTestAids();
-	void PlaceSuit();
+	/** Stands the model on the floor in front of the user, facing them, beside the other models, and makes that its reset spot. */
+	void PlaceInFront(AMRSuit* ModelSuit);
+	/** No wall or furniture between the user and a spot on the floor (or right behind it). */
+	bool IsSpotClear(const FVector& Head, const FVector& Spot, float FloorHeight) const;
 	bool ResolveModel(int32 ModelIndex, TSubclassOf<AMRSuit>& OutClass, UMRSuitConfiguration*& OutConfiguration) const;
 	void SetActiveModel(int32 ModelIndex);
 	float FindClearDistance(const FVector& Head, const FVector& Forward, float FloorHeight) const;
@@ -223,11 +236,13 @@ private:
 
 	void HandleRoomLoadTimeout();
 
+	/** The models standing in the room, by catalog index. */
 	UPROPERTY(Transient)
-	TObjectPtr<AMRSuit> Suit;
+	TMap<int32, TObjectPtr<AMRSuit>> ShownModels;
 
 	int32 ActiveModelIndex = INDEX_NONE;
-	int32 PendingModelIndex = INDEX_NONE;
+	/** Models chosen before the floor was known; they are put in the room once it is. */
+	TArray<int32> PendingModels;
 
 	TWeakObjectPtr<AMRUKAnchor> FloorAnchor;
 	FTimerHandle RoomLoadTimeoutHandle;

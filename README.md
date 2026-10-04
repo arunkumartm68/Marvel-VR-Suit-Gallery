@@ -15,7 +15,8 @@ body-fitting mechanic.
 ## Features
 
 - **Passthrough mixed reality.** Your real room stays visible; the model is composited into it.
-- **True 1:1 scale.** The Iron Man Mark 85 suit stands 1.90 m tall, calibrated in real centimetres.
+- **True 1:1 scale.** Models are calibrated in real centimetres: the Iron Man Mark 85 suit stands 1.90 m tall, the
+  Iron Spider suit 1.73 m, with its four mechanical legs reaching round to the front in the movie X pose.
 - **Real floor detection.** Uses the Quest room scan (MR Utility Kit) to find the floor, with the Guardian
   boundary floor as a fallback, so the feet stand on the floor instead of floating or sinking.
 - **Smart placement.** The model appears about 1.75 m in front of you, facing you, and is moved closer if a
@@ -25,8 +26,12 @@ body-fitting mechanic.
   - **Rotate:** turn your hand while pinching.
   - **Resize:** pinch with both hands and pull apart or push together (0.2x to 3x).
   - Grabbing only works when your hand is on the model, so it never moves by accident.
+  - **Never through the floor:** you can hold the model up in the air or set it down on the floor, but pushing
+    it lower keeps it resting on the floor. On the floor it stands upright with its feet exactly on it, and if you
+    let go just above the floor it lands there.
 - **Hand menu to choose models.** The app starts with an empty room. Turn your left palm towards your face to
-  open the **MODELS** menu beside your hand, then tap a button with your right index finger.
+  open the **MODELS** menu beside your hand, then tap a button with your right index finger. Each button puts its
+  model in the room or takes it out again, so several models can stand side by side.
 - **Data-driven model list.** Add a model by adding an entry to `DA_ModelCatalog`; no code changes needed.
   Models are loaded only when chosen, to save memory on the headset.
 - **Lighting that follows the model.** Key, fill and rim lights stay attached to the suit, and their brightness
@@ -39,13 +44,14 @@ body-fitting mechanic.
 | Action | Hand tracking | Controllers |
 |---|---|---|
 | Open / close the model menu | Turn your left palm towards your face | Left **Menu** button |
-| Choose a model | Tap its button with your right index fingertip | Point the right controller at it, pull the trigger |
-| Remove the model | Tap **CLEAR** | Point + trigger on **CLEAR** |
-| Put the model back where it was placed, at life size | Tap **RESET** | Point + trigger on **RESET**, or press **A** / **X** |
-| Grab, move, rotate | Pinch on the model and move your hand | Grip or trigger on the model |
-| Resize | Pinch with both hands, pull apart or together | Grip with both controllers |
+| Put a model in the room / take it out | Tap its button with your right index fingertip | Point the right controller at it, pull the trigger |
+| Remove all models | Tap **CLEAR** | Point + trigger on **CLEAR** |
+| Put the models back where they were placed, at life size | Tap **RESET** | Point + trigger on **RESET**, or press **A** / **X** |
+| Grab, move, rotate | Pinch on a model and move your hand | Grip or trigger on the model |
+| Resize | Pinch one model with both hands, pull apart or together | Grip with both controllers |
 
-Tapping the model that is already in the room brings it back in front of you at life size.
+A lit button means that model is in the room. A new model appears in front of you, beside any model already
+standing there. With one hand on each of two models you can move both at once.
 
 Before the first launch, run **Space Setup** on the headset (Settings > Physical Space > Space Setup) so the app
 can find your real floor. Allow the **spatial data** permission when the app asks for it.
@@ -109,7 +115,9 @@ then push the OBB with the `win-x64/UnrealAndroidFileTool.exe push` command from
 1. Import the mesh into `Content/MRSuitViewer/<YourModel>/` at real-world size in centimetres, with the pivot
    on the floor between the feet. Keep it Quest-friendly (a few hundred thousand triangles at most).
 2. Create a **Suit Configuration** data asset (`MRSuitConfiguration`): set the mesh, rotation offset so it faces
-   +X, target height, and floor offset if needed.
+   +X, target height, and floor offset if needed. If parts stick far out from the body (like the Iron Spider's
+   legs), fill **Grab Capsules** with a touch outline (see `SourceArt/IronSpider/prepare_ironspider_for_quest.py`);
+   otherwise the box around the whole model is used for grabbing.
 3. Create a Blueprint child of **`BP_MRSuit`** and set its *Configuration* (add lights here too if you like).
 4. Open **`Content/MRSuitViewer/Data/DA_ModelCatalog`** and add an entry: display name, description,
    actor class (your Blueprint) and configuration.
@@ -127,11 +135,13 @@ Source/MRSuitViewer/          C++ module (the framework)
   MRModelCatalog.h             List of models offered in the hand menu
   MRWristMenuComponent.*       Hand menu beside the left hand
 Content/MRSuitViewer/
-  Blueprints/                  BP_MRGameMode, BP_MRPawn, BP_MRSuitViewer, BP_MRSuit, BP_IronMan85
-  Data/                        DA_ModelCatalog, DA_SuitConfiguration
+  Blueprints/                  BP_MRGameMode, BP_MRPawn, BP_MRSuitViewer, BP_MRSuit, BP_IronMan85, BP_IronSpider
+  Data/                        DA_ModelCatalog, DA_SuitConfiguration, DA_IronSpiderConfiguration
   Maps/L_MRSuitViewer          Empty MR level (passthrough shows your room)
   Materials/, Lighting/, Suit/ Materials, studio lighting cubemap, Iron Man Mk 85 mesh
+  IronSpider/                  Iron Spider mesh, textures, material instances, contact shadow
 SourceArt/IronManMk85/         Quest-optimised suit (.blend / .fbx) and the script that prepared it
+SourceArt/IronSpider/          Quest-optimised Iron Spider (.blend / .fbx), leg-posing and floor-shadow scripts
 Tools/                         Editor Python scripts that create / configure the content
 Config/                        Quest, Meta XR, rendering and input settings
 ```
@@ -141,8 +151,10 @@ Logic lives in C++; the `BP_` Blueprints are thin subclasses that expose the set
 ## Status and known limitations
 
 - The hand menu is new; its size and placement may need tuning on the headset.
-- Grabbing uses a box around the model, so near the torso you can grab slightly before touching the armor.
+- Iron Man is grabbed through a box around the suit, so near the torso you can grab slightly before touching the
+  armor. The Iron Spider uses a touch outline of capsules that follows its body and legs.
 - The Iron Man materials are flat colours (the source model had no textures).
+- With its legs spread the Iron Spider is about 2.65 m wide; in a small room, shrink it with two hands.
 - Development builds only; no Meta Store packaging (signing, entitlement) is set up.
 
 ## Credits
@@ -150,3 +162,7 @@ Logic lives in C++; the `BP_` Blueprints are thin subclasses that expose the set
 - Built with Unreal Engine 5.7, the Meta XR plugin and Meta MR Utility Kit.
 - Iron Man Mark 85 model: third-party model from Sketchfab, reduced and prepared for Quest. The original download
   is **not** included in this repository; check the original model's license before reusing it.
+- Iron Spider suit: ["iron spider suit mcu"](https://sketchfab.com/3d-models/iron-spider-suit-mcu-a9fcb9396dda478289f4a359f01de457)
+  by Itx prince, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changed for this project: the
+  back legs are re-posed, duplicate shells removed, scaled to 1.73 m and prepared for Quest. The original download is
+  **not** included in this repository.
