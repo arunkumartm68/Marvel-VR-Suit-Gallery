@@ -173,6 +173,18 @@ bool AMRViewerPawn::GetTrackedHand(bool bRightHand, FXRHandTrackingState& OutHan
 		&& OutHand.HandKeyRotations.Num() > static_cast<int32>(EHandKeypoint::Palm);
 }
 
+bool AMRViewerPawn::IsHandTracked(bool bRightHand) const
+{
+	FXRHandTrackingState Hand;
+	if (GetTrackedHand(bRightHand, Hand))
+	{
+		return true;
+	}
+	const UMotionControllerComponent* Grip = bRightHand ? RightGrip : LeftGrip;
+	const UMotionControllerComponent* Aim = bRightHand ? RightAim : LeftAim;
+	return (Grip && Grip->IsTracked()) || (Aim && Aim->IsTracked());
+}
+
 FVector AMRViewerPawn::GetHandLocation(bool bRightHand) const
 {
 	// Tracked hand: grab from the pinch point between thumb and index tips.
@@ -443,10 +455,11 @@ void AMRViewerPawn::UpdateSuitInteraction(float DeltaTime)
 		bPrevResetButton = bResetNow;
 	}
 
+	// A hand that loses tracking lets go: its location would fall back to the room origin and drag the model there.
 	float LeftStrength = 0.f;
 	float RightStrength = 0.f;
-	const bool bLeftWantsGrab = IsHandGrabbing(false, LeftStrength);
-	const bool bRightWantsGrab = IsHandGrabbing(true, RightStrength);
+	const bool bLeftWantsGrab = IsHandGrabbing(false, LeftStrength) && IsHandTracked(false);
+	const bool bRightWantsGrab = IsHandGrabbing(true, RightStrength) && IsHandTracked(true);
 
 	const FVector LeftPos = GetHandLocation(false);
 	const FQuat LeftRot = GetHandRotation(false);

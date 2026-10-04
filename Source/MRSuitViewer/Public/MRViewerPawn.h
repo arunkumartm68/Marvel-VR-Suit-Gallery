@@ -136,6 +136,8 @@ private:
 	void UpdateSuitInteraction(float DeltaTime);
 	bool IsHandGrabbing(bool bRightHand, float& OutStrength);
 	bool GetTrackedHand(bool bRightHand, FXRHandTrackingState& OutHand) const;
+	/** The hand (or its controller) is tracked, so GetHandLocation is where the hand really is. */
+	bool IsHandTracked(bool bRightHand) const;
 	/** Finds where this hand would take hold of the suit: the touched spot on its outline, or where the aim ray meets it. */
 	bool FindGrabPoint(bool bRightHand, const AMRSuit* Suit, FVector& OutGrabPoint) const;
 	/** The model this hand touches; with several close together, the one whose outline is nearest to the hand. */
